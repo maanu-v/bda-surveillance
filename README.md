@@ -38,6 +38,8 @@ MARS Dataset → Kafka Producers → Kafka Cluster → Spark Streaming → Detec
 - At least 8GB RAM
 - 20GB free disk space
 
+> **Note**: If you have existing services running on ports 3000, 6379, or 5432, the setup will automatically use alternative ports (see [Port Configuration](#port-configuration) below).
+
 ### 1. Setup Infrastructure
 
 ```bash
@@ -56,15 +58,33 @@ chmod +x scripts/*.sh
 - **Hadoop NameNode UI**: http://localhost:9870
 - **Kafka UI**: http://localhost:8080
 - **Spark Master UI**: http://localhost:8081
-- **Grafana Dashboard**: http://localhost:3000 (admin/admin)
+- **Grafana Dashboard**: http://localhost:3001 (admin/admin)
 - **Prometheus**: http://localhost:9090
+- **Elasticsearch**: http://localhost:9200
 
-### 3. Database Connection
+### 3. Database Connections
 
-- **Host**: localhost:5432
+**PostgreSQL:**
+- **Host**: localhost:5433
 - **Database**: surveillance_db
 - **Username**: surveillance_user
 - **Password**: surveillance_pass
+
+**Redis Cache:**
+- **Host**: localhost:6380
+- **Default DB**: 0
+
+## Port Configuration
+
+The following ports have been configured to avoid common conflicts:
+
+| Service | Default Port | Configured Port | Reason |
+|---------|-------------|-----------------|---------|
+| Redis | 6379 | **6380** | Avoid conflict with existing Redis instances |
+| Grafana | 3000 | **3001** | Avoid conflict with development servers |
+| PostgreSQL | 5432 | **5433** | Avoid conflict with local PostgreSQL |
+
+If you need to change these ports further, edit the `docker-compose.yml` file and restart the services.
 
 ## Project Structure
 
@@ -132,6 +152,32 @@ bda-surveillance/
    ```
 
 ## Monitoring & Debugging
+
+### Port Conflicts
+
+If you encounter port conflicts during setup:
+
+1. **Check which service is using the port**:
+   ```bash
+   sudo lsof -i :6379  # Check Redis port
+   sudo lsof -i :3000  # Check Grafana port
+   sudo lsof -i :5432  # Check PostgreSQL port
+   ```
+
+2. **Stop conflicting services** (if safe to do so):
+   ```bash
+   # Stop local Redis
+   sudo systemctl stop redis
+   
+   # Stop local PostgreSQL
+   sudo systemctl stop postgresql
+   ```
+
+3. **Or modify ports in docker-compose.yml** and restart:
+   ```bash
+   docker-compose down
+   ./scripts/setup.sh
+   ```
 
 ### View Logs
 
