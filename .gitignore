@@ -1,0 +1,16 @@
+# Ignore the data/wildtrack directory
+data/wildtrack/
+
+# Ignore any .env files
+.env
+
+# Ignore Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pdb
+
+# Ignore all zip files inside any directory
+*.zip
+

@@ -29,15 +29,18 @@ This system can serve as a foundation for **smart surveillance applications**, *
 
 ## 1. **Data Ingestion**
 
-- **Dataset**: We use the **MARS dataset**, a large-scale video dataset for person re-identification.
-  - Contains >1.1M frames from 6 cameras, with bounding-box tracklets of over 1,200 identities.
-  - Suited for training and evaluating both **tracking** and **cross-camera re-identification**.
+- **Dataset**: We use the **Wildtrack dataset**, a large-scale multi-camera detection dataset.
+  - Contains 7 overlapping cameras with >40,000 synchronized frames.
+  - Includes 3D ground truth positions on a 480x1440 grid with 2.5cm spacing.
+  - Provides camera calibrations (intrinsic/extrinsic) for advanced analytics.
+  - Suited for multi-camera tracking, re-identification, and 3D trajectory analysis.
 - **Streaming Setup**:
   - Instead of live CCTV, we simulate streaming using **Kafka producers**.
-  - Each tracklet (video clip of a person) is published to a **Kafka topic** (e.g., `cam1-feed`, `cam2-feed`).
-  - Metadata like `camera_id` and `timestamp` are embedded with the video frames.
+  - Each camera video (cam1.mp4 to cam7.mp4) is published to separate **Kafka topics** (e.g., `cam1-feed`, `cam2-feed`, ..., `cam7-feed`).
+  - Metadata like `camera_id`, `timestamp`, and `3D_position` are embedded with the video frames.
 - **Why**:
   - Kafka ensures **scalability and modularity**, letting us extend from offline dataset → real-time camera feeds without changing the downstream pipeline.
+  - 7-camera setup with ground truth enables robust evaluation of cross-camera re-identification.
 
 ---
 
@@ -73,18 +76,20 @@ This system can serve as a foundation for **smart surveillance applications**, *
 ## 4. **Re-Identification (Across Cameras)**
 
 - **Algorithm**: **OSNet (Omni-Scale Network)**
-  - Pretrained/fine-tuned on **MARS / DukeMTMC-reID**.
+  - Pretrained/fine-tuned on **Wildtrack / DukeMTMC-reID**.
   - Outputs embedding vectors (e.g., 512-D) for each detected person.
 - **Workflow**:
   - For each person tracklet → compute embedding.
   - Store embeddings in a **global embedding database**.
   - Compare embeddings using **cosine similarity**.
   - If similarity > threshold → assign same **global ID** across cameras.
+  - Use **camera calibrations** and **3D positions** as additional constraints.
 - **Why**: Ensures that the **same person across different cameras** is consistently labeled.
 - **Best Practices**:
   - Normalize embeddings (L2 normalization).
   - Use **re-ranking algorithms** (k-reciprocal re-ranking).
-  - Add **spatio-temporal priors** (e.g., expected transition time between cameras).
+  - Add **spatio-temporal priors** using Wildtrack's 3D coordinate system.
+  - Leverage **camera geometry** for physically plausible matches.
 
 ---
 
@@ -142,14 +147,14 @@ This system can serve as a foundation for **smart surveillance applications**, *
 
 # Final Workflow (Step-by-Step Summary)
 
-1. **MARS dataset tracklets → Kafka producers** simulate live camera feeds.
-2. **Kafka topics** stream frames with metadata (`camera_id`, `timestamp`).
+1. **Wildtrack dataset videos (cam1-cam7) → Kafka producers** simulate live camera feeds.
+2. **Kafka topics** stream frames with metadata (`camera_id`, `timestamp`, `3D_position`).
 3. **Spark Structured Streaming** consumes frames → YOLO detector → bounding boxes.
 4. **DeepSORT/ByteTrack** assigns **local IDs** per camera.
-5. **OSNet embeddings** extracted → stored in DB → matched across cameras.
+5. **OSNet embeddings** extracted → stored in DB → matched across cameras using 3D constraints.
 6. Assign **global IDs** for same person across different cameras.
-7. Build **trajectories** (graph structure) for each person.
+7. Build **3D trajectories** using Wildtrack's coordinate system.
 8. Store events in **HDFS** and publish results back to Kafka.
-9. **Dashboard** consumes results → shows live detections, trajectories, analytics (search, heatmaps, flow).
+9. **Dashboard** consumes results → shows live detections, 3D trajectories, analytics (search, heatmaps, flow).
 
 ![image.png](image.png)

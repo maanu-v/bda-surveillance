@@ -1,13 +1,13 @@
 # BDA Surveillance System
 
-A distributed real-time video analytics system for multi-camera person tracking and re-identification.
+A distributed real-time video analytics system for multi-camera person tracking and re-identification using the Wildtrack dataset.
 
 ## Architecture Overview
 
 ```
-MARS Dataset → Kafka Producers → Kafka Cluster → Spark Streaming → Detection/Tracking/ReID → Results → Dashboard
-                                      ↓
-                               HDFS (Storage) ← PostgreSQL (Metadata) ← Elasticsearch (Embeddings)
+Wildtrack Dataset → Kafka Producers → Kafka Cluster → Spark Streaming → Detection/Tracking/ReID → Results → Dashboard
+                                         ↓
+                                HDFS (Storage) ← PostgreSQL (Metadata) ← Elasticsearch (Embeddings)
 ```
 
 ## Infrastructure Components
@@ -90,14 +90,15 @@ If you need to change these ports further, edit the `docker-compose.yml` file an
 
 ```
 bda-surveillance/
-├── kafka-producers/          # MARS dataset streaming simulators
+├── kafka-producers/          # Wildtrack dataset streaming simulators
 ├── spark-streaming/          # Scala processing jobs
 ├── models/                   # YOLO, OSNet model files
 ├── dashboard/               # Web interface (React/Flask)
 ├── scripts/                 # Setup and utility scripts
 ├── monitoring/              # Prometheus configuration
 ├── init-scripts/           # Database initialization
-├── data/                   # MARS dataset location
+├── data/                   # Wildtrack dataset location
+│   └── wildtrack/          # 7-camera videos + annotations
 ├── docker-compose.yml      # Infrastructure definition
 └── PROJECT.md             # Detailed methodology
 ```
@@ -107,48 +108,56 @@ bda-surveillance/
 ### Phase 1: Data Ingestion ✅
 
 - [x] Infrastructure setup
-- [ ] MARS dataset integration
-- [ ] Kafka producers for camera simulation
+- [x] HDFS-ready architecture
+- [ ] Wildtrack dataset in HDFS (run `./scripts/download_wildtrack.sh`)
+- [ ] HDFS-enabled Kafka producers
 
 ### Phase 2: Core Processing
 
 - [ ] YOLO detection in Spark
-- [ ] DeepSORT tracking implementation
-- [ ] OSNet re-identification
+- [ ] DeepSORT tracking implementation  
+- [ ] OSNet re-identification across 7 cameras
 
 ### Phase 3: Analytics
 
-- [ ] Global trajectory construction
+- [ ] Global trajectory construction with 3D coordinates
 - [ ] Person search functionality
-- [ ] Real-time heatmaps
+- [ ] Real-time heatmaps using Wildtrack ground plane
 
 ### Phase 4: Dashboard
 
-- [ ] Live feed visualization
-- [ ] Analytics interface
-- [ ] Query system
+- [ ] Live feed visualization (7 camera views)
+- [ ] 3D trajectory visualization
+- [ ] Analytics interface with camera calibration support
 
 ## Next Steps
 
-1. **Download MARS Dataset**:
+## Next Steps
+
+1. **Download Wildtrack Dataset to HDFS**:
 
    ```bash
-   # Place MARS dataset in ./data/ directory
-   mkdir -p data/MARS
-   # Download from: http://zheng-lab.cecs.anu.edu.au/Project/project_mars.html
+   # Download and upload dataset to HDFS
+   ./scripts/download_wildtrack.sh
+   
+   # Verify HDFS storage
+   # Access HDFS Web UI: http://localhost:9870
+   # Navigate to: /surveillance/wildtrack/
    ```
 
-2. **Implement Kafka Producer**:
+2. **Stream from HDFS via Kafka**:
 
    ```bash
    cd kafka-producers
-   # Create Python producer for MARS dataset streaming
+   # Stream all 7 cameras from HDFS
+   python wildtrack_producer.py --use-hdfs --fps 10
    ```
 
 3. **Develop Spark Streaming Job**:
    ```bash
    cd spark-streaming
-   # Create Scala application for real-time processing
+   # Create Scala application for HDFS-based processing
+   # Process 7 concurrent camera streams with cross-camera tracking
    ```
 
 ## Monitoring & Debugging
