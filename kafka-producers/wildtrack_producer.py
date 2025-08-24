@@ -1,5 +1,5 @@
 """
-Wildtrack Dataset Kafka Producer (HDFS-enabled)
+Wildtrack  Dataset Kafka Producer (HDFS-enabled)
 Simulates real-time streaming from 7 cameras using Wildtrack dataset stored in HDFS.
 """
 
