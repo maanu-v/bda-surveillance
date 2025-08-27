@@ -1,282 +1,381 @@
+#!/usr/bin/env python3
 """
-Wildtrack  Dataset Kafka Producer (HDFS-enabled)
-Simulates real-time streaming from 7 cameras using Wildtrack dataset stored in HDFS.
+Wildtrack Dataset Kafka Producer
+Streams video frames from 7 cameras to Kafka topics for real-time processing.
 """
 
 import cv2
 import json
 import time
 import argparse
-import subprocess
-from kafka import KafkaProducer
-from pathlib import Path
-import base64
 import logging
-import tempfile
+from datetime import datetime
+from pathlib import Path
+import numpy as np
+from kafka import KafkaProducer
+from kafka.errors import KafkaError
+import base64
 import os
+from typing import Dict, List, Optional
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-class WildtrackKafkaProducer:
-    def __init__(self, kafka_servers='localhost:9092', use_hdfs=True, hdfs_base_path='/surveillance/wildtrack'):
+class WildtrackProducer:
+    """Kafka producer for Wildtrack 7-camera dataset streaming."""
+    
+    def __init__(self, 
+                 bootstrap_servers: List[str] = ['localhost:9092', 'localhost:9093'],
+                 data_path: str = '../data/wildtrack',
+                 fps: int = 10,
+                 use_hdfs: bool = False):
         """
-        Initialize Wildtrack Kafka Producer with HDFS support
+        Initialize Wildtrack Kafka Producer.
         
         Args:
-            kafka_servers: Kafka bootstrap servers
-            use_hdfs: Whether to use HDFS or local filesystem
-            hdfs_base_path: Base path in HDFS for Wildtrack data
+            bootstrap_servers: Kafka broker addresses
+            data_path: Path to Wildtrack dataset 
+            fps: Frames per second for streaming
+            use_hdfs: Whether to read from HDFS (future implementation)
         """
-        self.kafka_servers = kafka_servers
+        self.bootstrap_servers = bootstrap_servers
+        self.data_path = Path(data_path)
+        self.fps = fps
+        self.frame_interval = 1.0 / fps
         self.use_hdfs = use_hdfs
-        self.hdfs_base_path = hdfs_base_path
+        
+        # Camera configuration
+        self.cameras = [f'cam{i}' for i in range(1, 8)]  # cam1 to cam7
+        self.camera_topics = {cam: f'{cam}-feed' for cam in self.cameras}
         
         # Initialize Kafka producer
-        self.producer = KafkaProducer(
-            bootstrap_servers=kafka_servers,
-            value_serializer=lambda x: json.dumps(x).encode('utf-8'),
-            key_serializer=lambda x: x.encode('utf-8') if x else None
-        )
+        self.producer = self._create_producer()
         
-        # Camera topics
-        self.camera_topics = {
-            f'cam{i}': f'cam{i}-feed' for i in range(1, 8)
-        }
+        # Load annotations and calibrations
+        self.annotations = self._load_annotations()
+        self.calibrations = self._load_calibrations()
         
-        logger.info(f"Initialized Wildtrack Producer for {len(self.camera_topics)} cameras")
-        logger.info(f"Using {'HDFS' if use_hdfs else 'Local'} storage")
-    
-    def hdfs_command(self, cmd):
-        """Execute HDFS command via docker"""
-        full_cmd = f"docker exec namenode hdfs dfs {cmd}"
-        result = subprocess.run(full_cmd, shell=True, capture_output=True, text=True)
-        return result.returncode == 0, result.stdout, result.stderr
-    
-    def download_from_hdfs(self, hdfs_path, local_path):
-        """Download file from HDFS to local temporary location"""
-        success, stdout, stderr = self.hdfs_command(f"-get {hdfs_path} {local_path}")
-        if not success:
-            logger.error(f"Failed to download from HDFS: {stderr}")
-            return False
-        return True
-    
-    def load_annotations(self, frame_number):
-        """Load annotations for specific frame from HDFS or local"""
-        if self.use_hdfs:
-            # Download annotation file from HDFS
-            hdfs_annotation_path = f"{self.hdfs_base_path}/annotations/annotations_positions/{frame_number:08d}.json"
+        logger.info(f"Initialized WildtrackProducer with {len(self.cameras)} cameras")
+        logger.info(f"Streaming at {fps} FPS to topics: {list(self.camera_topics.values())}")
+
+    def _create_producer(self) -> KafkaProducer:
+        """Create and configure Kafka producer."""
+        try:
+            producer = KafkaProducer(
+                bootstrap_servers=self.bootstrap_servers,
+                value_serializer=lambda v: json.dumps(v).encode('utf-8'),
+                key_serializer=lambda k: k.encode('utf-8') if k else None,
+                acks='all',  # Wait for all replicas
+                retries=3,
+                max_in_flight_requests_per_connection=1,
+                compression_type='gzip',
+                buffer_memory=33554432,  # 32MB buffer
+                batch_size=16384,
+                linger_ms=10
+            )
+            logger.info("Kafka producer created successfully")
+            return producer
+        except Exception as e:
+            logger.error(f"Failed to create Kafka producer: {e}")
+            raise
+
+    def _load_annotations(self) -> Dict:
+        """Load frame annotations from JSON files."""
+        annotations = {}
+        annotations_dir = self.data_path / 'annotations_positions'
+        
+        if not annotations_dir.exists():
+            logger.warning(f"Annotations directory not found: {annotations_dir}")
+            return annotations
             
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as temp_file:
-                temp_path = temp_file.name
+        try:
+            for json_file in annotations_dir.glob('*.json'):
+                frame_id = json_file.stem  # e.g., '00000000'
+                with open(json_file, 'r') as f:
+                    annotations[frame_id] = json.load(f)
+            logger.info(f"Loaded {len(annotations)} annotation files")
+        except Exception as e:
+            logger.error(f"Error loading annotations: {e}")
             
-            success = self.download_from_hdfs(hdfs_annotation_path, temp_path)
-            if success and os.path.exists(temp_path):
-                try:
-                    with open(temp_path, 'r') as f:
-                        annotations = json.load(f)
-                    os.unlink(temp_path)  # Clean up
-                    return annotations
-                except:
-                    if os.path.exists(temp_path):
-                        os.unlink(temp_path)
-                    return []
-            else:
-                if os.path.exists(temp_path):
-                    os.unlink(temp_path)
-                return []
-        else:
-            # Local filesystem fallback
-            annotation_file = Path(f'../data/wildtrack/annotations_positions/{frame_number:08d}.json')
-            if annotation_file.exists():
-                with open(annotation_file, 'r') as f:
-                    return json.load(f)
-        return []
-    
-    def get_video_path(self, camera_id):
-        """Get video path (HDFS or local)"""
-        if self.use_hdfs:
-            return f"{self.hdfs_base_path}/videos/cam{camera_id}.mp4"
-        else:
-            return f"../data/wildtrack/cam{camera_id}.mp4"
-    
-    def open_video_capture(self, camera_id):
-        """Open video capture from HDFS or local filesystem"""
-        if self.use_hdfs:
-            # Download video from HDFS to temporary location
-            hdfs_video_path = f"{self.hdfs_base_path}/videos/cam{camera_id}.mp4"
+        return annotations
+
+    def _load_calibrations(self) -> Dict:
+        """Load camera calibration data."""
+        calibrations = {}
+        calibrations_dir = self.data_path / 'calibrations'
+        
+        if not calibrations_dir.exists():
+            logger.warning(f"Calibrations directory not found: {calibrations_dir}")
+            return calibrations
             
-            with tempfile.NamedTemporaryFile(suffix=f'_cam{camera_id}.mp4', delete=False) as temp_file:
-                temp_path = temp_file.name
+        # This would load intrinsic/extrinsic camera parameters
+        # For now, return empty dict - will be implemented when needed
+        logger.info("Camera calibrations loading placeholder")
+        return calibrations
+
+    def _convert_position_to_3d(self, position_id: int) -> Dict[str, float]:
+        """
+        Convert Wildtrack position ID to 3D coordinates.
+        
+        Grid: 480x1440 with 2.5cm spacing, origin at (-3.0, -9.0)
+        """
+        if position_id < 0:
+            return {"x": 0.0, "y": 0.0, "z": 0.0}
             
-            logger.info(f"Downloading cam{camera_id}.mp4 from HDFS...")
-            success = self.download_from_hdfs(hdfs_video_path, temp_path)
-            
-            if success and os.path.exists(temp_path):
-                cap = cv2.VideoCapture(temp_path)
-                if cap.isOpened():
-                    logger.info(f"Successfully opened cam{camera_id}.mp4 from HDFS")
-                    return cap, temp_path
-                else:
-                    logger.error(f"Failed to open video: cam{camera_id}.mp4")
-                    os.unlink(temp_path)
-                    return None, None
-            else:
-                logger.error(f"Failed to download cam{camera_id}.mp4 from HDFS")
-                if os.path.exists(temp_path):
-                    os.unlink(temp_path)
-                return None, None
-        else:
-            # Local filesystem
-            video_path = f"../data/wildtrack/cam{camera_id}.mp4"
-            if os.path.exists(video_path):
-                cap = cv2.VideoCapture(video_path)
-                return cap, None  # No temp file to clean up
-            else:
-                logger.error(f"Video file not found: {video_path}")
-                return None, None
-    
-    def position_id_to_coordinates(self, position_id):
-        """Convert positionID to 3D coordinates"""
         x = -3.0 + 0.025 * (position_id % 480)
         y = -9.0 + 0.025 * (position_id // 480)
-        return x, y
-    
-    def encode_frame(self, frame):
-        """Encode frame to base64 for Kafka transmission"""
-        _, buffer = cv2.imencode('.jpg', frame)
-        return base64.b64encode(buffer).decode('utf-8')
-    
-    def stream_camera(self, camera_id, fps=10, start_frame=0, max_frames=None):
-        """
-        Stream single camera video to Kafka from HDFS
+        z = 0.0  # Assuming ground level
         
-        Args:
-            camera_id: Camera ID (1-7)
-            fps: Target FPS for streaming
-            start_frame: Starting frame number
-            max_frames: Maximum frames to stream (None for all)
-        """
-        topic = self.camera_topics[f'cam{camera_id}']
+        return {"x": x, "y": y, "z": z}
+
+    def _encode_frame(self, frame: np.ndarray) -> str:
+        """Encode frame as base64 string for Kafka transport."""
+        try:
+            # Compress frame to JPEG
+            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 85]
+            _, buffer = cv2.imencode('.jpg', frame, encode_param)
+            
+            # Convert to base64
+            frame_base64 = base64.b64encode(buffer).decode('utf-8')
+            return frame_base64
+        except Exception as e:
+            logger.error(f"Frame encoding failed: {e}")
+            return ""
+
+    def _create_frame_message(self, 
+                             camera_id: str, 
+                             frame: np.ndarray, 
+                             frame_number: int,
+                             timestamp: datetime) -> Dict:
+        """Create structured message for Kafka."""
         
-        cap, temp_file = self.open_video_capture(camera_id)
-        if cap is None:
+        # Get frame annotations if available
+        frame_id = f"{frame_number:08d}"  # Zero-padded frame ID
+        frame_annotations = self.annotations.get(frame_id, [])
+        
+        # Convert annotations to include 3D positions
+        persons = []
+        for annotation in frame_annotations:
+            if isinstance(annotation, dict) and 'positionID' in annotation:
+                position_3d = self._convert_position_to_3d(annotation['positionID'])
+                persons.append({
+                    'position_id': annotation['positionID'],
+                    'position_3d': position_3d,
+                    'person_id': annotation.get('personID', -1)
+                })
+        
+        # Encode frame
+        encoded_frame = self._encode_frame(frame)
+        
+        message = {
+            'camera_id': camera_id,
+            'frame_number': frame_number,
+            'timestamp': timestamp.isoformat(),
+            'frame_data': encoded_frame,
+            'frame_shape': frame.shape,
+            'persons': persons,
+            'metadata': {
+                'fps': self.fps,
+                'dataset': 'wildtrack',
+                'total_persons': len(persons)
+            }
+        }
+        
+        return message
+
+    def _get_video_path(self, camera_id: str) -> Path:
+        """Get video file path for camera."""
+        if self.use_hdfs:
+            # TODO: Implement HDFS reading
+            raise NotImplementedError("HDFS reading not yet implemented")
+        else:
+            return self.data_path / f'{camera_id}.mp4'
+
+    def stream_camera(self, camera_id: str, max_frames: Optional[int] = None):
+        """Stream frames from a single camera to Kafka."""
+        
+        video_path = self._get_video_path(camera_id)
+        
+        if not video_path.exists():
+            logger.error(f"Video file not found: {video_path}")
             return
-        
-        cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-        
-        frame_interval = 1.0 / fps
-        frame_count = start_frame
-        
-        logger.info(f"Starting camera {camera_id} stream to topic '{topic}' (from {'HDFS' if self.use_hdfs else 'local'})")
+            
+        topic = self.camera_topics[camera_id]
         
         try:
+            cap = cv2.VideoCapture(str(video_path))
+            
+            if not cap.isOpened():
+                logger.error(f"Failed to open video: {video_path}")
+                return
+                
+            # Get video properties
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            original_fps = cap.get(cv2.CAP_PROP_FPS)
+            
+            logger.info(f"Streaming {camera_id}: {total_frames} frames at {self.fps} FPS")
+            logger.info(f"Original video FPS: {original_fps}, Target FPS: {self.fps}")
+            
+            frame_count = 0
+            start_time = time.time()
+            
             while True:
                 ret, frame = cap.read()
+                
                 if not ret:
-                    logger.info(f"End of video for camera {camera_id}")
+                    logger.info(f"End of video reached for {camera_id}")
+                    break
+                    
+                if max_frames and frame_count >= max_frames:
+                    logger.info(f"Max frames ({max_frames}) reached for {camera_id}")
                     break
                 
-                if max_frames and (frame_count - start_frame) >= max_frames:
-                    logger.info(f"Reached max frames ({max_frames}) for camera {camera_id}")
-                    break
-                
-                # Load annotations for this frame
-                annotations = self.load_annotations(frame_count)
-                
-                # Prepare message
-                message = {
-                    'camera_id': camera_id,
-                    'frame_number': frame_count,
-                    'timestamp': time.time(),
-                    'frame_data': self.encode_frame(frame),
-                    'annotations': [],
-                    'source': 'hdfs' if self.use_hdfs else 'local'
-                }
-                
-                # Add 3D position annotations
-                for ann in annotations:
-                    if 'positionID' in ann:
-                        x, y = self.position_id_to_coordinates(ann['positionID'])
-                        message['annotations'].append({
-                            'position_id': ann['positionID'],
-                            'x_coord': x,
-                            'y_coord': y,
-                            'person_id': ann.get('personID', -1)
-                        })
+                # Create message
+                timestamp = datetime.now()
+                message = self._create_frame_message(camera_id, frame, frame_count, timestamp)
                 
                 # Send to Kafka
-                self.producer.send(topic, key=f'cam{camera_id}_{frame_count}', value=message)
-                
-                if frame_count % 100 == 0:
-                    logger.info(f"Camera {camera_id}: Sent frame {frame_count} (annotations: {len(message['annotations'])})")
-                
-                frame_count += 1
-                time.sleep(frame_interval)
-                
-        except KeyboardInterrupt:
-            logger.info(f"Interrupted camera {camera_id} stream")
-        finally:
+                try:
+                    future = self.producer.send(topic, key=camera_id, value=message)
+                    # Don't wait for each message to avoid blocking
+                    
+                    frame_count += 1
+                    
+                    # Log progress
+                    if frame_count % 100 == 0:
+                        logger.info(f"{camera_id}: Sent {frame_count}/{total_frames} frames")
+                        
+                except KafkaError as e:
+                    logger.error(f"Kafka send error for {camera_id}: {e}")
+                    
+                # Control frame rate
+                elapsed = time.time() - start_time
+                expected_time = frame_count * self.frame_interval
+                if elapsed < expected_time:
+                    time.sleep(expected_time - elapsed)
+                    
             cap.release()
-            if temp_file and os.path.exists(temp_file):
-                os.unlink(temp_file)
-                logger.info(f"Cleaned up temporary file for camera {camera_id}")
-            logger.info(f"Released camera {camera_id}")
-    
-    def stream_all_cameras(self, fps=10, start_frame=0, max_frames=None):
-        """
-        Stream all 7 cameras simultaneously using threading
-        """
+            logger.info(f"Finished streaming {camera_id}: {frame_count} frames sent")
+            
+        except Exception as e:
+            logger.error(f"Error streaming {camera_id}: {e}")
+
+    def stream_all_cameras(self, max_frames_per_camera: Optional[int] = None):
+        """Stream all 7 cameras concurrently."""
         import threading
         
+        logger.info("Starting concurrent streaming for all 7 cameras")
+        
         threads = []
-        for camera_id in range(1, 8):
+        for camera_id in self.cameras:
             thread = threading.Thread(
                 target=self.stream_camera,
-                args=(camera_id, fps, start_frame, max_frames),
-                daemon=True
+                args=(camera_id, max_frames_per_camera),
+                name=f"Stream-{camera_id}"
             )
             threads.append(thread)
             thread.start()
             
             # Small delay between camera starts
-            time.sleep(0.1)
+            time.sleep(0.5)
+        
+        # Wait for all threads to complete
+        for thread in threads:
+            thread.join()
+            
+        logger.info("All camera streams completed")
+
+    def create_topics(self):
+        """Create Kafka topics for all cameras."""
+        from kafka.admin import KafkaAdminClient, NewTopic
         
         try:
-            # Wait for all threads
-            for thread in threads:
-                thread.join()
-        except KeyboardInterrupt:
-            logger.info("Stopping all camera streams...")
-        
-        self.producer.close()
-        logger.info("All cameras stopped")
+            admin_client = KafkaAdminClient(
+                bootstrap_servers=self.bootstrap_servers,
+                client_id='wildtrack-admin'
+            )
+            
+            # Create topics
+            topics = []
+            for topic_name in self.camera_topics.values():
+                topic = NewTopic(
+                    name=topic_name,
+                    num_partitions=3,
+                    replication_factor=2
+                )
+                topics.append(topic)
+            
+            # Create topics
+            fs = admin_client.create_topics(new_topics=topics, validate_only=False)
+            
+            for topic, f in fs.items():
+                try:
+                    f.result()  # The result itself is None
+                    logger.info(f"Created topic: {topic}")
+                except Exception as e:
+                    if "already exists" in str(e).lower():
+                        logger.info(f"Topic already exists: {topic}")
+                    else:
+                        logger.error(f"Failed to create topic {topic}: {e}")
+                        
+        except Exception as e:
+            logger.error(f"Error creating topics: {e}")
+
+    def close(self):
+        """Clean up resources."""
+        if self.producer:
+            self.producer.flush()
+            self.producer.close()
+            logger.info("Kafka producer closed")
 
 def main():
-    parser = argparse.ArgumentParser(description='Wildtrack Kafka Producer with HDFS support')
-    parser.add_argument('--kafka-servers', default='localhost:9092', help='Kafka bootstrap servers')
-    parser.add_argument('--use-hdfs', action='store_true', default=True, help='Use HDFS for data storage')
-    parser.add_argument('--hdfs-base-path', default='/surveillance/wildtrack', help='Base path in HDFS')
-    parser.add_argument('--camera', type=int, choices=range(1, 8), help='Stream single camera (1-7)')
-    parser.add_argument('--fps', type=int, default=10, help='Target FPS for streaming')
-    parser.add_argument('--start-frame', type=int, default=0, help='Starting frame number')
-    parser.add_argument('--max-frames', type=int, help='Maximum frames to stream')
+    """Main entry point."""
+    parser = argparse.ArgumentParser(description='Wildtrack Kafka Producer')
+    parser.add_argument('--fps', type=int, default=10, help='Frames per second (default: 10)')
+    parser.add_argument('--max-frames', type=int, help='Max frames per camera (for testing)')
+    parser.add_argument('--camera', type=str, help='Stream single camera (cam1-cam7)')
+    parser.add_argument('--data-path', type=str, default='../data/wildtrack', 
+                       help='Path to Wildtrack dataset')
+    parser.add_argument('--use-hdfs', action='store_true', help='Read from HDFS (not implemented)')
+    parser.add_argument('--create-topics', action='store_true', help='Create Kafka topics')
     
     args = parser.parse_args()
     
-    producer = WildtrackKafkaProducer(
-        kafka_servers=args.kafka_servers,
-        use_hdfs=args.use_hdfs,
-        hdfs_base_path=args.hdfs_base_path
+    # Initialize producer
+    producer = WildtrackProducer(
+        data_path=args.data_path,
+        fps=args.fps,
+        use_hdfs=args.use_hdfs
     )
     
-    if args.camera:
-        # Stream single camera
-        producer.stream_camera(args.camera, args.fps, args.start_frame, args.max_frames)
-    else:
-        # Stream all cameras
-        producer.stream_all_cameras(args.fps, args.start_frame, args.max_frames)
+    try:
+        # Create topics if requested
+        if args.create_topics:
+            logger.info("Creating Kafka topics...")
+            producer.create_topics()
+            
+        # Stream videos
+        if args.camera:
+            if args.camera in producer.cameras:
+                logger.info(f"Streaming single camera: {args.camera}")
+                producer.stream_camera(args.camera, args.max_frames)
+            else:
+                logger.error(f"Invalid camera: {args.camera}. Valid: {producer.cameras}")
+                return
+        else:
+            logger.info("Streaming all 7 cameras")
+            producer.stream_all_cameras(args.max_frames)
+            
+    except KeyboardInterrupt:
+        logger.info("Streaming interrupted by user")
+    except Exception as e:
+        logger.error(f"Streaming failed: {e}")
+    finally:
+        producer.close()
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
