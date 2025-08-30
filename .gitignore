@@ -14,3 +14,6 @@ __pycache__/
 # Ignore all zip files inside any directory
 *.zip
 
+
+# Ignore the detection results directory
+detection_results/
