@@ -4,7 +4,7 @@ import numpy as np
 import base64
 import io
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, from_json, udf, current_timestamp
+from pyspark.sql.functions import col, from_json, udf
 from pyspark.sql.types import StringType, StructType, StructField
 from ultralytics import YOLO
 
@@ -13,8 +13,6 @@ from ultralytics import YOLO
 # ----------------------------
 spark = SparkSession.builder \
     .appName("YOLO-Spark-Consumer") \
-    .config("spark.sql.adaptive.enabled", "true") \
-    .config("spark.sql.adaptive.coalescePartitions.enabled", "true") \
     .getOrCreate()
 
 spark.sparkContext.setLogLevel("WARN")
@@ -70,47 +68,16 @@ json_stream = raw_stream.selectExpr("CAST(value AS STRING) as json") \
     .select("data.*")
 
 # Apply YOLO detection
-detections = json_stream.withColumn("detections", detect_udf(col("data"))) \
-    .withColumn("processed_timestamp", current_timestamp())
+detections = json_stream.withColumn("detections", detect_udf(col("data")))
 
 # ----------------------------
-# Output to Console
+# Output
 # ----------------------------
-console_query = detections.select("frame_id", "timestamp", "detections") \
+query = detections.select("frame_id", "timestamp", "detections") \
     .writeStream \
     .outputMode("append") \
     .format("console") \
     .option("truncate", False) \
-    .trigger(processingTime="5 seconds") \
     .start()
 
-# ----------------------------
-# Store Detection Results as Parquet (Console only for now due to permissions)
-# Note: In production, you would set up proper HDFS/S3 permissions
-# ----------------------------
-# detections_query = detections.select("frame_id", "timestamp", "detections", "processed_timestamp") \
-#     .writeStream \
-#     .outputMode("append") \
-#     .format("parquet") \
-#     .option("path", "/opt/spark-data/detections/cam1") \
-#     .option("checkpointLocation", "/opt/spark-data/checkpoints/detections") \
-#     .trigger(processingTime="10 seconds") \
-#     .start()
-
-# ----------------------------
-# Store Raw Frames (Console only for now due to permissions)
-# ----------------------------
-# raw_frames_query = json_stream.select("frame_id", "timestamp", "data") \
-#     .withColumn("stored_timestamp", current_timestamp()) \
-#     .writeStream \
-#     .outputMode("append") \
-#     .format("parquet") \
-#     .option("path", "/opt/spark-data/raw_frames/cam1") \
-#     .option("checkpointLocation", "/opt/spark-data/checkpoints/raw_frames") \
-#     .trigger(processingTime="10 seconds") \
-#     .start()
-
-# ----------------------------
-# Wait for all streams to finish
-# ----------------------------
-console_query.awaitTermination()
+query.awaitTermination()

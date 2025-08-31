@@ -71,10 +71,9 @@ while cap.isOpened():
     frame_base64 = base64.b64encode(buffer).decode('utf-8')
     
     # Create JSON message matching the expected schema
-    timestamp_str = datetime.now().strftime("%Y-%m-%d-%H")  # Hour-level partitioning
     message = {
         "frame_id": str(frame_id),
-        "timestamp": timestamp_str,
+        "timestamp": datetime.now().isoformat(),
         "data": frame_base64
     }
 
