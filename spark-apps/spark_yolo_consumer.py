@@ -2,11 +2,11 @@
 import cv2
 import numpy as np
 import base64
-import io
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, from_json, udf
 from pyspark.sql.types import StringType, StructType, StructField
 from ultralytics import YOLO
+import json
 
 # ----------------------------
 # Initialize Spark
@@ -20,7 +20,7 @@ spark.sparkContext.setLogLevel("WARN")
 # ----------------------------
 # Load YOLO model
 # ----------------------------
-yolo_model = YOLO("yolov8n.pt")   # you can use yolov8s.pt or yolov12 when available
+yolo_model = YOLO("yolov8n.pt")   # change to yolov12 when available
 
 # ----------------------------
 # Schema for Kafka messages
@@ -42,13 +42,20 @@ def detect_objects(base64_img):
 
         results = yolo_model.predict(frame, conf=0.4, verbose=False)
         detections = []
+
         for box in results[0].boxes:
             cls = yolo_model.names[int(box.cls)]
             conf = float(box.conf)
-            detections.append(f"{cls}:{conf:.2f}")
-        return ", ".join(detections) if detections else "No objects"
+            x1, y1, x2, y2 = box.xyxy[0].tolist()  # bounding box coordinates
+            detections.append({
+                "class": cls,
+                "confidence": round(conf, 2),
+                "bbox": [round(x1, 2), round(y1, 2), round(x2, 2), round(y2, 2)]
+            })
+
+        return json.dumps(detections) if detections else "[]"
     except Exception as e:
-        return f"Error: {str(e)}"
+        return json.dumps({"error": str(e)})
 
 detect_udf = udf(detect_objects, StringType())
 
