@@ -68,9 +68,9 @@ required_files=(
     "data/wildtrack/cam5.mp4"
     "data/wildtrack/cam6.mp4"
     "data/wildtrack/cam7.mp4"
-    "data/wildtrack/Image_subsets"
-    "data/wildtrack/annotations_positions"
-    "data/wildtrack/calibrations"
+    # "data/wildtrack/Image_subsets"
+    # "data/wildtrack/annotations_positions"
+    # "data/wildtrack/calibrations"
 )
 
 for file in "${required_files[@]}"; do
@@ -86,13 +86,64 @@ print_status "✅ Dataset structure verified"
 print_step "Waiting for HDFS to be ready..."
 sleep 10
 
-# Create HDFS directories
-print_step "Creating HDFS directory structure..."
+# Clean up any existing surveillance data in HDFS
+print_step "Cleaning up existing surveillance data in HDFS..."
+docker exec namenode hdfs dfs -rm -r -f /surveillance 2>/dev/null || true
+# docker exec namenode hdfs dfs -rm -r -f /user/spark 2>/dev/null || true
+print_status "✅ Existing data cleaned up"
+
+# Create HDFS directories with proper permissions
+print_step "Setting up HDFS directory structure with proper permissions..."
+
+# Create base directories first
+print_status "Creating base directories..."
+docker exec namenode hdfs dfs -mkdir -p /user/spark
+docker exec namenode hdfs dfs -mkdir -p /surveillance
 docker exec namenode hdfs dfs -mkdir -p $HDFS_BASE_PATH
+
+# Set proper permissions
+print_status "Setting directory permissions..."
+docker exec namenode hdfs dfs -chmod 755 /user
+docker exec namenode hdfs dfs -chown spark:spark /user/spark
+docker exec namenode hdfs dfs -chmod 755 /surveillance
+docker exec namenode hdfs dfs -chmod 755 $HDFS_BASE_PATH
+
+# Verify permissions were set correctly
+if docker exec namenode hdfs dfs -ls / | grep -q "surveillance"; then
+    print_status "✅ Base directory permissions set correctly"
+else
+    print_error "Failed to set base directory permissions"
+    exit 1
+fi
+
+# Create subdirectories for wildtrack data
+print_status "Creating wildtrack subdirectories..."
 docker exec namenode hdfs dfs -mkdir -p $HDFS_BASE_PATH/videos
-docker exec namenode hdfs dfs -mkdir -p $HDFS_BASE_PATH/images
-docker exec namenode hdfs dfs -mkdir -p $HDFS_BASE_PATH/annotations
-docker exec namenode hdfs dfs -mkdir -p $HDFS_BASE_PATH/calibrations
+# docker exec namenode hdfs dfs -mkdir -p $HDFS_BASE_PATH/images
+# docker exec namenode hdfs dfs -mkdir -p $HDFS_BASE_PATH/annotations
+# docker exec namenode hdfs dfs -mkdir -p $HDFS_BASE_PATH/calibrations
+
+# Set permissions for subdirectories
+docker exec namenode hdfs dfs -chmod 755 $HDFS_BASE_PATH/videos
+# docker exec namenode hdfs dfs -chmod 755 $HDFS_BASE_PATH/images
+# docker exec namenode hdfs dfs -chmod 755 $HDFS_BASE_PATH/annotations
+# docker exec namenode hdfs dfs -chmod 755 $HDFS_BASE_PATH/calibrations
+
+# Verify subdirectories were created
+if docker exec namenode hdfs dfs -ls $HDFS_BASE_PATH | grep -q "videos"; then
+    print_status "✅ Subdirectories created successfully"
+else
+    print_error "Failed to create subdirectories"
+    exit 1
+fi
+
+print_status "✅ HDFS directory structure created with proper permissions"
+
+# Verify directory structure and permissions
+print_step "Verifying HDFS directory structure..."
+docker exec namenode hdfs dfs -ls /
+docker exec namenode hdfs dfs -ls /surveillance
+docker exec namenode hdfs dfs -ls $HDFS_BASE_PATH
 
 # Upload videos to HDFS
 print_step "Uploading camera videos to HDFS..."
@@ -106,32 +157,32 @@ for i in {1..7}; do
 done
 
 # Upload Image_subsets to HDFS
-print_step "Uploading image subsets to HDFS..."
-if [ -d "data/wildtrack/Image_subsets" ]; then
-    docker cp data/wildtrack/Image_subsets namenode:/tmp/
-    docker exec namenode hdfs dfs -put /tmp/Image_subsets $HDFS_BASE_PATH/images/
-fi
+# print_step "Uploading image subsets to HDFS..."
+# if [ -d "data/wildtrack/Image_subsets" ]; then
+#     docker cp data/wildtrack/Image_subsets namenode:/tmp/
+#     docker exec namenode hdfs dfs -put /tmp/Image_subsets $HDFS_BASE_PATH/images/
+# fi
 
 # Upload annotations to HDFS
-print_step "Uploading annotations to HDFS..."
-if [ -d "data/wildtrack/annotations_positions" ]; then
-    docker cp data/wildtrack/annotations_positions namenode:/tmp/
-    docker exec namenode hdfs dfs -put /tmp/annotations_positions $HDFS_BASE_PATH/annotations/
-fi
+# print_step "Uploading annotations to HDFS..."
+# if [ -d "data/wildtrack/annotations_positions" ]; then
+#     docker cp data/wildtrack/annotations_positions namenode:/tmp/
+#     docker exec namenode hdfs dfs -put /tmp/annotations_positions $HDFS_BASE_PATH/annotations/
+# fi
 
 # Upload calibrations to HDFS
-print_step "Uploading calibrations to HDFS..."
-if [ -d "data/wildtrack/calibrations" ]; then
-    docker cp data/wildtrack/calibrations namenode:/tmp/
-    docker exec namenode hdfs dfs -put /tmp/calibrations $HDFS_BASE_PATH/calibrations/
-fi
+# print_step "Uploading calibrations to HDFS..."
+# if [ -d "data/wildtrack/calibrations" ]; then
+#     docker cp data/wildtrack/calibrations namenode:/tmp/
+#     docker exec namenode hdfs dfs -put /tmp/calibrations $HDFS_BASE_PATH/calibrations/
+# fi
 
 # Upload other files
-print_step "Uploading additional files..."
-if [ -f "data/wildtrack/rectangles.pom" ]; then
-    docker cp data/wildtrack/rectangles.pom namenode:/tmp/
-    docker exec namenode hdfs dfs -put /tmp/rectangles.pom $HDFS_BASE_PATH/
-fi
+# print_step "Uploading additional files..."
+# if [ -f "data/wildtrack/rectangles.pom" ]; then
+#     docker cp data/wildtrack/rectangles.pom namenode:/tmp/
+#     docker exec namenode hdfs dfs -put /tmp/rectangles.pom $HDFS_BASE_PATH/
+# fi
 
 # Verify HDFS upload
 print_step "Verifying HDFS upload..."
@@ -143,18 +194,26 @@ docker exec namenode hdfs dfs -du -h $HDFS_BASE_PATH
 
 # Cleanup temporary files in container
 print_step "Cleaning up temporary files..."
-docker exec namenode rm -rf /tmp/Image_subsets /tmp/annotations_positions /tmp/calibrations /tmp/cam*.mp4 /tmp/rectangles.pom
+# docker exec namenode rm -rf /tmp/Image_subsets /tmp/annotations_positions /tmp/calibrations /tmp/cam*.mp4 /tmp/rectangles.pom
+docker exec namenode rm -rf /tmp/cam*.mp4
+
 
 print_status "✅ Wildtrack dataset successfully uploaded to HDFS!"
 echo
-echo "📊 HDFS Structure:"
+echo "📊 HDFS Structure with Permissions:"
+echo "  • Base: /surveillance/wildtrack/ (755 permissions)"
 echo "  • Videos: $HDFS_BASE_PATH/videos/ (cam1.mp4 to cam7.mp4)"
-echo "  • Images: $HDFS_BASE_PATH/images/Image_subsets/"
-echo "  • Annotations: $HDFS_BASE_PATH/annotations/annotations_positions/"
-echo "  • Calibrations: $HDFS_BASE_PATH/calibrations/"
+# echo "  • Images: $HDFS_BASE_PATH/images/Image_subsets/"
+# echo "  • Annotations: $HDFS_BASE_PATH/annotations/annotations_positions/"
+# echo "  • Calibrations: $HDFS_BASE_PATH/calibrations/"
+echo "  • User directory: /user/spark/ (owned by spark:spark)"
 echo
 echo "🔗 Access HDFS Web UI: http://localhost:9870"
 echo "   Navigate to: Utilities → Browse the file system → /surveillance/wildtrack"
+echo
+print_step "Final HDFS verification:"
+docker exec namenode hdfs dfs -ls /
+docker exec namenode hdfs dfs -ls /surveillance
 echo
 print_status "Next steps:"
 echo "  1. Update Kafka producers to read from HDFS"
