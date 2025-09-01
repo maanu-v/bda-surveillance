@@ -20,7 +20,7 @@ spark.sparkContext.setLogLevel("WARN")
 # ----------------------------
 # Load YOLO model
 # ----------------------------
-yolo_model = YOLO("yolov8n.pt")   # change to yolov12 when available
+yolo_model = YOLO("yolo11n.pt")   # change to yolov12 when available
 
 # ----------------------------
 # Schema for Kafka messages
